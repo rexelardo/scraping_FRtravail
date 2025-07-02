@@ -12,8 +12,11 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
-
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 
 def setup_driver():
     options = webdriver.ChromeOptions()
@@ -28,62 +31,62 @@ def setup_driver():
 
 def safe_click(driver, element, retries=3, pause=1.0):
     """
-    Safely click an element, retrying on intercepts and scrolling into view.
-    Falls back to JS click on final attempt.
+    Safely click an element with retries for intercepts and stale references.
     """
     for attempt in range(retries):
         try:
-            # scroll into center view
             driver.execute_script(
-                "arguments[0].scrollIntoView({block: 'center'});",
-                element
+                "arguments[0].scrollIntoView({block: 'center'});", element
             )
-            time.sleep(0.1)
+            time.sleep(0.5)
             element.click()
             return
-        except ElementClickInterceptedException:
+        except (ElementClickInterceptedException, StaleElementReferenceException) as e:
             if attempt < retries - 1:
                 time.sleep(pause)
                 continue
-            # final fallback: JS click
-            driver.execute_script("arguments[0].click();", element)
-            return
+            else:
+                try:
+                    driver.execute_script("arguments[0].click();", element)
+                    return
+                except Exception as js_e:
+                    raise Exception(f"Click failed even with JS fallback: {js_e}")
+
 
 
 def open_profile_n(driver, target_n, batch_size=10):
-    """
-    Load batches of profiles until the Nth profile detail button is visible,
-    then click it safely.
-    target_n is 1-based; xiti_titreProfil wants zero-based.
-    """
     counter = 0
-    zero_idx = target_n - 1
     more_btn_xpath = "//button[contains(@onclick, 'rafraichirUneZoneCvAvecRecherche')]"
-    detail_btn_xpath = f"//button[contains(@onclick, 'xiti_titreProfil({zero_idx})')]"
-    final_detail_btn_xpath = f"//button[contains(@onclick, 'xiti_titreProfil({target_n%10})')]"
+    profile_buttons_xpath = "//button[contains(@onclick, 'xiti_titreProfil')]"
 
     while counter < target_n:
         try:
-            # look for the detail button
-            detail_btn = WebDriverWait(driver, 3).until(
-                EC.element_to_be_clickable((By.XPATH, final_detail_btn_xpath))
-            )
-            safe_click(driver, detail_btn)
-            time.sleep(1)
-            break
-        except TimeoutException:
-            # load next batch
             more_btn = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.XPATH, more_btn_xpath))
+                EC.element_to_be_clickable((By.XPATH, more_btn_xpath))
             )
             safe_click(driver, more_btn)
-            time.sleep(1)
             counter += batch_size
+            time.sleep(1.2)  # give DOM time to update
+        except Exception as e:
+            print(f"Error loading next batch: {e}")
+            time.sleep(2)
+            continue
+
+    # Click the last profile button after final batch
+    try:
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.XPATH, profile_buttons_xpath))
+        )
+        profile_buttons = driver.find_elements(By.XPATH, profile_buttons_xpath)
+        final_button = profile_buttons[-2]  # second to last button
+        safe_click(driver, final_button)
+    except Exception as e:
+        print(f"Error clicking final profile: {e}")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     driver = setup_driver()
-    open_profile_n(driver, 1000)
+    open_profile_n(driver, 420)
     # keep browser open for inspection
     time.sleep(120)
